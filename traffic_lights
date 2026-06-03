@@ -1,0 +1,70 @@
+// VERSION: (Test) Traffic Light
+
+// Variables
+
+const int greenTestPin = 3;
+const int redTestPin = 4;
+const int yellowTestPin = 5;
+
+// Functions
+
+void visFade(int pin, bool toggle, float interval) {
+
+	float time = (interval*1000)/256;
+	
+  if (toggle) {
+    for (int i = 0; i <= 255; i++) {
+      analogWrite(pin, i);
+      delay(time);
+    }
+  } else {
+    for (int i = 255; i >= 0; i--) {
+      analogWrite(pin, i);
+      delay(time);
+    }
+  }
+}
+
+void executeLight(int pin, const char* type, float time) {
+  if (strcmp(type, "RED") == 0) {
+	 digitalWrite(pin, HIGH);
+    delay(time * 1000);
+	 digitalWrite(pin, LOW);
+  }
+  else if (strcmp(type, "YELLOW") == 0) {
+    float dur = time/6.0;
+	 for (int i = 1; i <= 3; i++) {
+		visFade(pin, true, dur);
+		visFade(pin, false, dur);
+   }
+  }
+  else if (strcmp(type, "GREEN") == 0) {
+    digitalWrite(pin, HIGH);
+    delay(time * 1000);
+	 digitalWrite(pin, LOW);
+  }
+}
+
+void runTrafficLight(int greenPin, int redPin, int yellowPin, float interval, bool toggle) {
+	if (toggle) {
+		executeLight(greenPin, "GREEN", interval);
+		executeLight(yellowPin, "YELLOW", interval);
+	} else {
+		executeLight(redPin, "RED", interval*2);
+	}
+}
+
+// SETUP
+
+void setup() {
+	pinMode(greenTestPin, OUTPUT);
+	pinMode(redTestPin, OUTPUT);
+	pinMode(yellowTestPin, OUTPUT);
+}
+
+// Main Loop
+
+void loop() {
+	  runTrafficLight(greenTestPin, redTestPin, yellowTestPin, 3, true);
+	  runTrafficLight(greenTestPin, redTestPin, yellowTestPin, 3, false);
+}
