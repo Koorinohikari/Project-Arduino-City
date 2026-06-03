@@ -1,0 +1,59 @@
+// VERSION: (Test) City Lights
+
+// Variables
+
+const int cityLightsPin = 6;
+const int ldrPin = A0;
+const int ldrThreshold = 500;
+bool cityLightsState = false;
+
+// Functions
+
+void visFade(int pin, bool toggle, float interval) {
+
+	float time = (interval*1000)/256;
+	
+  if (toggle) {
+    for (int i = 0; i <= 255; i++) {
+      analogWrite(pin, i);
+      delay(time);
+    }
+  } else {
+    for (int i = 255; i >= 0; i--) {
+      analogWrite(pin, i);
+      delay(time);
+    }
+  }
+}
+
+void detectLight() {
+	int ldrValue = analogRead(ldrPin);
+	
+	if (ldrValue < ldrThreshold) {
+    if (!cityLightsState) {              // Only write if state changed
+      cityLightsState = true;
+		//visFade(cityLightsPin, true, 1);
+      	digitalWrite(cityLightsPin, HIGH);
+    }
+  } else {
+    if (cityLightsState) {
+      cityLightsState = false;
+		//visFade(cityLightsPin, false, 1);
+      	digitalWrite(cityLightsPin, LOW);
+    }
+  }
+}
+
+// SETUP
+
+void setup() {
+  	pinMode(cityLightsPin, OUTPUT);
+	Serial.begin(9600);
+}
+
+// Main Loop
+
+void loop() {
+  detectLight();
+  delay(50);
+}
