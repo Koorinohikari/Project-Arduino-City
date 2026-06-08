@@ -1,0 +1,48 @@
+// VERSION: UDS (4 Pins) Test
+
+// Variables
+int distance;
+
+const int buzzer = 13;
+const int buzzerDistance = 100;
+int buzzerState = false;
+
+const int led = 12;
+const int ledDistance = 50;
+int ledState = false;
+
+const int trigger = 7;
+const int echo = 4;
+
+// Functions
+
+void calc() {
+  digitalWrite(trigger, HIGH);
+  delayMicroseconds(50);
+  digitalWrite(trigger, LOW);
+
+  unsigned long lapse = pulseIn(echo, HIGH);
+
+  distance = lapse * .034 / 2; // Calculating distance: d=s*t -> Distance = [Speed of sound] x [Time]
+
+  if (distance <= buzzerDistance) { if (!buzzerState) { buzzerState = true; tone(buzzer, 500); } } else { if (buzzerState) { buzzerState = false; noTone(buzzer); } }
+  if (distance <= ledDistance) { if (!ledState) { ledState = true; digitalWrite(led, HIGH); } } else { if (ledState) { ledState = false; digitalWrite(led, LOW); } }
+}
+
+// Setup
+
+void setup() {
+  pinMode(buzzer, OUTPUT);
+  pinMode(led, OUTPUT);
+  pinMode(trigger, OUTPUT);
+  pinMode(echo, INPUT);
+  Serial.begin(115200);
+}
+
+// Main Loop
+
+void loop() {
+  delay(50);
+  calc();
+  Serial.println(distance);
+}
