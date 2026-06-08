@@ -32,14 +32,12 @@ void detectLight() {
 	if (ldrValue < ldrThreshold) {
     if (!cityLightsState) {              // Only write if state changed
       cityLightsState = true;
-		//visFade(cityLightsPin, true, 1);
-      	digitalWrite(cityLightsPin, HIGH);
+		visFade(cityLightsPin, true, 1);
     }
   } else {
     if (cityLightsState) {
       cityLightsState = false;
-		//visFade(cityLightsPin, false, 1);
-      	digitalWrite(cityLightsPin, LOW);
+		visFade(cityLightsPin, false, 1);
     }
   }
 }
@@ -48,7 +46,7 @@ void detectLight() {
 
 void setup() {
   	pinMode(cityLightsPin, OUTPUT);
-	Serial.begin(9600);
+	Serial.begin(9600); 
 }
 
 // Main Loop
