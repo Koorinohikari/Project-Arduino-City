@@ -1,0 +1,222 @@
+// VERSION: Merged — Traffic Light + City Lights + Ultrasonic Distance Sensor
+// Note: Merged utilizing Claude AI, due to my lack of both skill & time.
+// PIN CHANGE NOTICE:
+//   redPin    was 4 in the original Traffic Light code → moved to pin 2
+//             (conflict with UDS echo pin).
+//   yellowPin was 5 in the original Traffic Light code → moved to pin 9
+//             (pins 5 & 6 share Timer 0; sharing caused the yellow fade to
+//              inversely modulate the city lights PWM output on pin 6).
+//             Pin 9 uses Timer 1 — fully isolated from cityLightsPin (pin 6).
+//   Update your wiring for both pins.
+
+
+// ─── PIN DEFINITIONS ──────────────────────────────────────────────────────────
+
+// Traffic Light
+const int greenPin  = 3;
+const int redPin    = 2;   // ← moved from 4 (conflict with UDS echo)
+const int yellowPin = 9;   // ← moved from 5 (Timer 0 conflict with cityLightsPin)
+
+// City Lights
+const int cityLightsPin = 6;
+const int ldrPin        = A0;
+const int ldrThreshold  = 500;
+
+// Ultrasonic Distance Sensor (UDS)
+const int trigPin   = 7;
+const int echoPin   = 4;
+const int buzzerPin = 13;
+const int ledPin    = 12;
+
+const int buzzerDistance = 100;
+const int ledDistance    = 50;
+
+
+// ─── STATE VARIABLES ──────────────────────────────────────────────────────────
+
+// Traffic Light — non-blocking state machine
+enum TLPhase { TL_GREEN, TL_YELLOW, TL_RED };
+TLPhase       tlPhase      = TL_GREEN;
+unsigned long tlPhaseStart = 0;
+const float   tlInterval   = 3.0;  // seconds per base phase
+
+// City Lights
+bool          cityLightsState = false;
+bool          ldrPending      = false;   // a state change is waiting to be confirmed
+bool          ldrPendingState = false;   // the state we're waiting to confirm
+unsigned long ldrChangeTime   = 0;       // when the pending change was first seen
+const unsigned long LDR_DEBOUNCE = 500; // ms a reading must hold before acting
+
+// UDS
+int  distance    = 0;
+bool buzzerState = false;
+bool ledState    = false;
+
+// Sensor poll timing
+unsigned long lastSensorRead   = 0;
+const unsigned long sensorInterval = 50;  // ms between sensor reads
+
+
+// ─── SHARED UTILITIES ─────────────────────────────────────────────────────────
+
+// Fade a PWM pin in or out over durationSec seconds.
+// Note: this is a brief blocking call (~1 s) used only on city-light state
+// transitions (day→night / night→day), so it occurs infrequently.
+void visFade(int pin, bool fadeIn, float durationSec) {
+  float stepDelay = (durationSec * 1000.0) / 256.0;
+  if (fadeIn) {
+    for (int i = 0; i <= 255; i++) { analogWrite(pin, i); delay(stepDelay); }
+  } else {
+    for (int i = 255; i >= 0; i--) { analogWrite(pin, i); delay(stepDelay); }
+  }
+}
+
+
+// ─── TRAFFIC LIGHT (non-blocking) ─────────────────────────────────────────────
+//
+// Cycle: GREEN (tlInterval s) → YELLOW (tlInterval s, 3× fade in/out)
+//      → RED (tlInterval×2 s) → repeat
+//
+// Replaces the original delay()-based runTrafficLight() / executeLight() pair.
+
+void updateTrafficLight() {
+  unsigned long now     = millis();
+  unsigned long elapsed = now - tlPhaseStart;
+
+  switch (tlPhase) {
+
+    case TL_GREEN:
+      digitalWrite(greenPin, HIGH);
+      if (elapsed >= (unsigned long)(tlInterval * 1000UL)) {
+        digitalWrite(greenPin, LOW);
+        tlPhase      = TL_YELLOW;
+        tlPhaseStart = now;
+      }
+      break;
+
+    case TL_YELLOW: {
+      // Split tlInterval into 6 equal half-cycles (3 fade-in + 3 fade-out)
+      unsigned long cycleDur = (unsigned long)(tlInterval * 1000.0 / 6.0);
+      int           cycleNum = (int)(elapsed / cycleDur);
+      unsigned long cyclePos = elapsed % cycleDur;
+
+      if (cycleNum >= 6) {
+        analogWrite(yellowPin, 0);
+        tlPhase      = TL_RED;
+        tlPhaseStart = now;
+      } else {
+        int pwm = (cycleNum % 2 == 0)
+          ? (int)map(cyclePos, 0, cycleDur, 0, 255)   // fade in
+          : (int)map(cyclePos, 0, cycleDur, 255, 0);  // fade out
+        analogWrite(yellowPin, pwm);
+      }
+      break;
+    }
+
+    case TL_RED:
+      digitalWrite(redPin, HIGH);
+      if (elapsed >= (unsigned long)(tlInterval * 2000UL)) {
+        digitalWrite(redPin, LOW);
+        tlPhase      = TL_GREEN;
+        tlPhaseStart = now;
+      }
+      break;
+  }
+}
+
+
+// ─── CITY LIGHTS ──────────────────────────────────────────────────────────────
+//
+// Debounced: the LDR must report a new state consistently for LDR_DEBOUNCE ms
+// before the city lights respond. This prevents brief flickers from nearby LEDs
+// (e.g. the yellow traffic light) from spuriously toggling the city lights.
+
+void detectLight() {
+  int  ldrValue   = analogRead(ldrPin);
+  bool shouldBeOn = (ldrValue < ldrThreshold);
+
+  if (shouldBeOn != cityLightsState) {
+    if (!ldrPending) {
+      // First sample showing a change — start the debounce timer
+      ldrPending      = true;
+      ldrPendingState = shouldBeOn;
+      ldrChangeTime   = millis();
+    } else if (shouldBeOn == ldrPendingState &&
+               millis() - ldrChangeTime >= LDR_DEBOUNCE) {
+      // Reading held steady long enough — commit the change
+      ldrPending      = false;
+      cityLightsState = shouldBeOn;
+      visFade(cityLightsPin, shouldBeOn, 1.0);
+    }
+    // If shouldBeOn flipped back to match ldrPendingState's opposite,
+    // the else-branch below resets the pending flag.
+  } else {
+    // Current reading already matches state — cancel any pending change
+    ldrPending = false;
+  }
+}
+
+
+// ─── ULTRASONIC DISTANCE SENSOR ───────────────────────────────────────────────
+
+void readUDS() {
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(50);
+  digitalWrite(trigPin, LOW);
+
+  unsigned long lapse = pulseIn(echoPin, HIGH);
+  distance = lapse * 0.034 / 2;  // d = speed_of_sound × time / 2
+
+  // Buzzer: on when object is within buzzerDistance cm
+  if (distance <= buzzerDistance) {
+    if (!buzzerState) { buzzerState = true;  tone(buzzerPin, 500); }
+  } else {
+    if (buzzerState)  { buzzerState = false; noTone(buzzerPin);    }
+  }
+
+  // LED: on when object is within ledDistance cm
+  if (distance <= ledDistance) {
+    if (!ledState) { ledState = true;  digitalWrite(ledPin, HIGH); }
+  } else {
+    if (ledState)  { ledState = false; digitalWrite(ledPin, LOW);  }
+  }
+}
+
+
+// ─── SETUP ────────────────────────────────────────────────────────────────────
+
+void setup() {
+  // Traffic Light
+  pinMode(greenPin,  OUTPUT);
+  pinMode(redPin,    OUTPUT);
+  pinMode(yellowPin, OUTPUT);
+
+  // City Lights
+  pinMode(cityLightsPin, OUTPUT);
+
+  // Ultrasonic + indicators
+  pinMode(trigPin,   OUTPUT);
+  pinMode(echoPin,   INPUT);
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(ledPin,    OUTPUT);
+
+  Serial.begin(115200);
+  tlPhaseStart = millis();  // start traffic light immediately
+}
+
+
+// ─── MAIN LOOP ────────────────────────────────────────────────────────────────
+
+void loop() {
+  delay(10);
+  // Traffic light: checked every iteration — fully non-blocking
+  updateTrafficLight();
+
+  // City lights + UDS: polled every sensorInterval ms
+  unsigned long now = millis();
+  if (now - lastSensorRead >= sensorInterval) {
+    lastSensorRead = now;
+    detectLight();
+    readUDS();
+  }
+}
