@@ -15,26 +15,24 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &SPI, OLED_DC, OLED_RES, OLED_CS);
 
 void setup() {
-  if (!display.begin(SSD1306_SWITCHCAPVCC)) {
-    // Halt if display fails to initialize
-    while (true);
-  }
+  if (!display.begin(SSD1306_SWITCHCAPVCC)) { while (true); }
   display.clearDisplay();
   display.display();
-
-  printOLED("Hello, world!");
 }
 
 void loop() {
-  // empty for now
+  for (int i = 1; i <= 10; i++) {
+    printOLED(String(i));
+    delay(1000);
+  }
 }
 
-// Prints a single line of text on the OLED
-void printOLED(String text) {
-  display.clearDisplay();      // wipe previous frame
-  display.setTextSize(1);      // 1 = smallest readable size
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);     // top-left corner
+// Prints text on the OLED with configurable size, color, and cursor position
+void printOLED(String text, int size = 1, uint16_t color = SSD1306_WHITE, int cursorX = 0, int cursorY = 0) {
+  display.clearDisplay();
+  display.setTextSize(size);
+  display.setTextColor(color);
+  display.setCursor(cursorX, cursorY);
   display.print(text);
-  display.display();           // pushes buffer to screen — nothing shows without this
+  display.display();
 }
