@@ -7,9 +7,9 @@
 #define SCREEN_HEIGHT 64
 
 // Control pins — wire these as you like, just match here
-#define OLED_CS   53   // Chip Select
-#define OLED_DC   9    // Data/Command
-#define OLED_RES  8    // Reset
+#define OLED_CS   28   // Chip Select
+#define OLED_DC   26    // Data/Command
+#define OLED_RES  24    // Reset
 
 // Hardware SPI constructor: uses Mega's dedicated SCK(52)/MOSI(51) automatically
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &SPI, OLED_DC, OLED_RES, OLED_CS);
@@ -20,13 +20,6 @@ void setup() {
   display.display();
 }
 
-void loop() {
-  for (int i = 1; i <= 10; i++) {
-    printOLED(String(i));
-    delay(1000);
-  }
-}
-
 // Prints text on the OLED with configurable size, color, and cursor position
 void printOLED(String text, int size = 1, uint16_t color = SSD1306_WHITE, int cursorX = 0, int cursorY = 0) {
   display.clearDisplay();
@@ -35,4 +28,16 @@ void printOLED(String text, int size = 1, uint16_t color = SSD1306_WHITE, int cu
   display.setCursor(cursorX, cursorY);
   display.print(text);
   display.display();
+}
+
+void loop() {
+  for (int i = 10; i >= 0; i--) {
+    if (i >= 10) {
+			printOLED(String(i), 9, SSD1306_WHITE, 10);
+		} else {
+			printOLED(String(i), 9, SSD1306_WHITE, 40);
+		}
+  }
+	// Image printing concept
+	delay(2500);
 }
