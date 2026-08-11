@@ -1,0 +1,43 @@
+// Motor pin definitions
+// Front-Left
+const int FL_EN = 9;
+const int FL_IN1 = 8;
+const int FL_IN2 = 7;
+// Front-Right
+const int FR_EN = 10;
+const int FR_IN1 = 12;
+const int FR_IN2 = 13;
+// Rear-Left
+const int RL_EN = 11;
+const int RL_IN1 = 4;
+const int RL_IN2 = 5;
+// Rear-Right
+const int RR_EN = 6;
+const int RR_IN1 = 2;
+const int RR_IN2 = 3;
+
+void setup() {
+  int pins[] = {FL_EN, FL_IN1, FL_IN2, FR_EN, FR_IN1, FR_IN2,
+                RL_EN, RL_IN1, RL_IN2, RR_EN, RR_IN1, RR_IN2};
+  for (int i = 0; i < 12; i++) {
+    pinMode(pins[i], OUTPUT);
+  }
+}
+
+// Spins one wheel forward at given speed (0-255) for 'ms' milliseconds, then stops
+void testWheel(int enPin, int in1, int in2, int speed, int ms) {
+  digitalWrite(in1, HIGH);
+  digitalWrite(in2, LOW);
+  analogWrite(enPin, speed);
+  delay(ms);
+  analogWrite(enPin, 0); // stop
+  delay(300); // pause between wheels
+}
+
+void loop() {
+  testWheel(FL_EN, FL_IN1, FL_IN2, 200, 1000); // Front-Left
+  testWheel(FR_EN, FR_IN1, FR_IN2, 200, 1000); // Front-Right
+  testWheel(RL_EN, RL_IN1, RL_IN2, 200, 1000); // Rear-Left
+  testWheel(RR_EN, RR_IN1, RR_IN2, 200, 1000); // Rear-Right
+  delay(1000); // pause before repeating cycle
+}
