@@ -1,13 +1,10 @@
-// ---- Pin definitions ----
-const int ENA = 9;  // Left side speed (PWM)
+const int ENA = 9;
 const int IN1 = 8;
 const int IN2 = 7;
 
-const int ENB = 3;  // Right side speed (PWM)
-const int IN3 = 5;
-const int IN4 = 4;
-
-const int SPEED = 150; // 0-255, tweak as needed
+const int ENB = 10;
+const int IN3 = 6;
+const int IN4 = 5;
 
 void setup() {
   pinMode(ENA, OUTPUT);
@@ -18,51 +15,69 @@ void setup() {
   pinMode(IN4, OUTPUT);
 }
 
-// ---- Low-level side control ----
-void leftSide(int dir) { // 1 = forward, -1 = backward, 0 = stop
-  digitalWrite(IN1, dir == 1);
-  digitalWrite(IN2, dir == -1);
-  analogWrite(ENA, dir == 0 ? 0 : SPEED);
+void driveForward(int speed) {
+  analogWrite(ENA, speed);
+  analogWrite(ENB, speed);
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
 }
 
-void rightSide(int dir) {
-  digitalWrite(IN3, dir == 1);
-  digitalWrite(IN4, dir == -1);
-  analogWrite(ENB, dir == 0 ? 0 : SPEED);
+void driveBackward(int speed) {
+  analogWrite(ENA, speed);
+  analogWrite(ENB, speed);
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
 }
 
-// ---- High-level movement ----
-void moveForward()  { leftSide(1);  rightSide(1);  }
-void moveBackward() { leftSide(-1); rightSide(-1); }
-void rotateLeft()   { leftSide(-1); rightSide(1);  } // tank turn
-void rotateRight()  { leftSide(1);  rightSide(-1); }
-void stopAll()       { leftSide(0);  rightSide(0);  }
+void rotateLeft(int speed) {
+  // left side spins backward, right side spins forward
+  analogWrite(ENA, speed);
+  analogWrite(ENB, speed);
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+}
+
+void rotateRight(int speed) {
+  // left side spins forward, right side spins backward
+  analogWrite(ENA, speed);
+  analogWrite(ENB, speed);
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+}
+
+void stopMotors() {
+  analogWrite(ENA, 0);
+  analogWrite(ENB, 0);
+}
 
 void loop() {
-  moveForward();
+  int speed = 150; // 0-255, adjust as needed
+
+  driveForward(speed);
   delay(500);
-  stopAll();
+  stopMotors();
   delay(1000);
 
-  rotateLeft();
+  rotateLeft(speed);
+  delay(400);
+  stopMotors();
+  delay(1000);
+
+  rotateRight(speed);
+  delay(400); // same duration as rotateLeft cancels the rotation -> faces front again
+  stopMotors();
+  delay(1000);
+
+  driveBackward(speed);
   delay(500);
-  stopAll();
+  stopMotors();
   delay(1000);
-
-  rotateRight();
-  delay(500);
-  stopAll();
-  delay(1000);
-
-  // "Face front": left/right rotations above were equal, so it's
-  // already facing forward — this is just an explicit re-center pause.
-  stopAll();
-  delay(1000);
-
-  moveBackward();
-  delay(500);
-  stopAll();
-  delay(1000);
-
-  while (true); // stop repeating; remove this line to loop forever
 }
