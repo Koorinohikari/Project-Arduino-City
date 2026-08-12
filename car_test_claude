@@ -1,18 +1,14 @@
-const int ENA = 9;
-const int IN1 = 8;
-const int IN2 = 7;
+// ---- Pin definitions ----
+const int ENA = 2;  // Left side speed (PWM)
+const int IN1 = 4;
+const int IN2 = 5;
 
-const int ENB = 10;
+const int ENB = 3;  // Right side speed (PWM)
 const int IN3 = 6;
-const int IN4 = 5;
+const int IN4 = 7;
 
-// ---- IR sensor ----
-const int IR_PIN = 2;
-
-// Set this after checking Serial Monitor:
-// If reading = 1 (HIGH) when sensor is OVER the white line, keep HIGH.
-// If reading = 0 (LOW) when over the white line, change to LOW.
-const int LINE_DETECTED = HIGH;
+int SPEED = 150; // 0-255, tweak as needed
+int toggle = false;
 
 void setup() {
   pinMode(ENA, OUTPUT);
@@ -21,66 +17,38 @@ void setup() {
   pinMode(ENB, OUTPUT);
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
-  pinMode(IR_PIN, INPUT);
-
-  Serial.begin(9600); // for calibration - open Serial Monitor to check values
 }
 
-void driveForward(int speed) {
-  analogWrite(ENA, speed);
-  analogWrite(ENB, speed);
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
+// ---- Low-level side control ----
+void leftSide(int dir) { // 1 = forward, -1 = backward, 0 = stop
+  digitalWrite(IN1, dir == 1);
+  digitalWrite(IN2, dir == -1);
+  analogWrite(ENA, dir == 0 ? 0 : SPEED);
 }
 
-void driveBackward(int speed) {
-  analogWrite(ENA, speed);
-  analogWrite(ENB, speed);
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
+void rightSide(int dir) {
+  digitalWrite(IN3, dir == 1);
+  digitalWrite(IN4, dir == -1);
+  analogWrite(ENB, dir == 0 ? 0 : SPEED);
 }
 
-void rotateLeft(int speed) {
-  // left side spins backward, right side spins forward
-  analogWrite(ENA, speed);
-  analogWrite(ENB, speed);
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-}
+// ---- High-level movement ----
+void moveForward()  { leftSide(1);  rightSide(1);  }
+void rotateLeft() { leftSide(-1); rightSide(-1); }
+void moveBackward()   { leftSide(-1); rightSide(1);  }
+void rotateRight()  { leftSide(1);  rightSide(-1); }
+void stopAll()       { leftSide(0);  rightSide(0);  }
 
-void rotateRight(int speed) {
-  // left side spins forward, right side spins backward
-  analogWrite(ENA, speed);
-  analogWrite(ENB, speed);
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-}
+void loop() { while (toggle);
+  moveForward();
+  delay(100);
+  stopAll();
+  delay(1000);
 
-void stopMotors() {
-  analogWrite(ENA, 0);
-  analogWrite(ENB, 0);
-}
+  moveBackward();
+  delay(100);
+  stopAll();
+  delay(1000);
 
-void loop() {
-  int sensorValue = digitalRead(IR_PIN);
-  Serial.println(sensorValue); // watch this while testing over/off the line
-
-  if (sensorValue == LINE_DETECTED) {
-    moveForward();
-  } else {
-    stopAll();
-    delay(50);
-    rotateRight();  // pivot in place, searching for the line
-    delay(100);
-    stopAll();
-    delay(50);
-  }
+  toggle = true;
 }
