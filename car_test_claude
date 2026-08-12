@@ -6,6 +6,14 @@ const int ENB = 10;
 const int IN3 = 6;
 const int IN4 = 5;
 
+// ---- IR sensor ----
+const int IR_PIN = 2;
+
+// Set this after checking Serial Monitor:
+// If reading = 1 (HIGH) when sensor is OVER the white line, keep HIGH.
+// If reading = 0 (LOW) when over the white line, change to LOW.
+const int LINE_DETECTED = HIGH;
+
 void setup() {
   pinMode(ENA, OUTPUT);
   pinMode(IN1, OUTPUT);
@@ -13,6 +21,9 @@ void setup() {
   pinMode(ENB, OUTPUT);
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
+  pinMode(IR_PIN, INPUT);
+
+  Serial.begin(9600); // for calibration - open Serial Monitor to check values
 }
 
 void driveForward(int speed) {
@@ -59,25 +70,17 @@ void stopMotors() {
 }
 
 void loop() {
-  int speed = 150; // 0-255, adjust as needed
+  int sensorValue = digitalRead(IR_PIN);
+  Serial.println(sensorValue); // watch this while testing over/off the line
 
-  driveForward(speed);
-  delay(500);
-  stopMotors();
-  delay(1000);
-
-  rotateLeft(speed);
-  delay(400);
-  stopMotors();
-  delay(1000);
-
-  rotateRight(speed);
-  delay(400); // same duration as rotateLeft cancels the rotation -> faces front again
-  stopMotors();
-  delay(1000);
-
-  driveBackward(speed);
-  delay(500);
-  stopMotors();
-  delay(1000);
+  if (sensorValue == LINE_DETECTED) {
+    moveForward();
+  } else {
+    stopAll();
+    delay(50);
+    rotateRight();  // pivot in place, searching for the line
+    delay(100);
+    stopAll();
+    delay(50);
+  }
 }
