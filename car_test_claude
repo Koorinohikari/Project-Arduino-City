@@ -1,35 +1,41 @@
-// ---- Motor pin definitions ----
-const int ENA = 2;  // Left side speed (PWM)
+// ===== MOTORES =====
+const int ENA = 2;
 const int IN1 = 4;
 const int IN2 = 5;
-const int ENB = 3;  // Right side speed (PWM)
+
+const int ENB = 3;
 const int IN3 = 6;
 const int IN4 = 7;
 
-int SPEED = 150; // 0-255, tweak as needed
+const int SPEED = 20;
 
-// ---- TCS3200 color sensor pins ----
-const int S0 = 8;
-const int S1 = 9;
-const int S2 = 10;
-const int S3 = 11;
-const int TCS_OUT = 12;
-// OE (EO) tied directly to GND on the board, no pin needed
 
-// ---- Color detection tuning ----
-// Lower pulse width = stronger color reading. Calibrate these
-// by printing redPW/greenPW/bluePW over red vs non-red surfaces.
-long RED_THRESHOLD = 60;   // red must read stronger than this to count at all
-long RED_MARGIN    = 15;   // red must beat green/blue by at least this much
+// ===== TCS3200 =====
+const int S0 = 22;
+const int S1 = 23;
+const int S2 = 24;
+const int S3 = 25;
+const int TCS_OUT = 26;
 
-// ---- Movement tracking (for auto-resume after red clears) ----
+const int RED_THRESHOLD = 50;
+const int RED_MARGIN = 1;
+
+
+// ===== SENSOR IR DE PROXIMIDAD =====
+const int IR_SENSOR = 27;
+
+
+// ===== MOVIMIENTO ACTUAL =====
 typedef void (*MoveFunc)();
-MoveFunc activeMove = nullptr; // last commanded movement, or nullptr if stopped
+MoveFunc activeMove = nullptr;
+
 
 void setup() {
+
   pinMode(ENA, OUTPUT);
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
+
   pinMode(ENB, OUTPUT);
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
@@ -40,105 +46,216 @@ void setup() {
   pinMode(S3, OUTPUT);
   pinMode(TCS_OUT, INPUT);
 
-  // 20% frequency scaling - good default for pulseIn() reading
+  pinMode(IR_SENSOR, INPUT);
+
   digitalWrite(S0, HIGH);
   digitalWrite(S1, LOW);
 
-  Serial.begin(9600); // optional, useful for calibrating thresholds
+  Serial.begin(9600);
 }
 
-// ---- Low-level side control ----
-void leftSide(int dir) { // 1 = forward, -1 = backward, 0 = stop
-  digitalWrite(IN1, dir == 1);
-  digitalWrite(IN2, dir == -1);
-  analogWrite(ENA, dir == 0 ? 0 : SPEED);
+
+void leftSide(int dir) {
+
+  if (dir == 1) {
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+    analogWrite(ENA, SPEED);
+  }
+  else if (dir == -1) {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    analogWrite(ENA, SPEED);
+  }
+  else {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, LOW);
+    analogWrite(ENA, 0);
+  }
 }
+
+
 void rightSide(int dir) {
-  digitalWrite(IN3, dir == 1);
-  digitalWrite(IN4, dir == -1);
-  analogWrite(ENB, dir == 0 ? 0 : SPEED);
+
+  if (dir == 1) {
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+    analogWrite(ENB, SPEED);
+  }
+  else if (dir == -1) {
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
+    analogWrite(ENB, SPEED);
+  }
+  else {
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, LOW);
+    analogWrite(ENB, 0);
+  }
 }
 
-// ---- Color sensing ----
+
 long readColorPulse(bool s2, bool s3) {
+
   digitalWrite(S2, s2);
   digitalWrite(S3, s3);
-  delayMicroseconds(50); // let filter settle
-  return pulseIn(TCS_OUT, LOW, 25000); // 25ms timeout, returns 0 if no pulse
+
+  delayMicroseconds(50);
+
+  return pulseIn(TCS_OUT, LOW, 25000);
 }
 
+
 bool isRedDetected() {
-  long redPW   = readColorPulse(LOW, LOW);
-  long bluePW  = readColorPulse(LOW, HIGH);
+
+  long redPW = readColorPulse(LOW, LOW);
+  long bluePW = readColorPulse(LOW, HIGH);
   long greenPW = readColorPulse(HIGH, HIGH);
 
-  // Uncomment to calibrate:
-  // Serial.print("R:"); Serial.print(redPW);
-  // Serial.print(" G:"); Serial.print(greenPW);
-  // Serial.print(" B:"); Serial.println(bluePW);
-
-  if (redPW == 0) return false; // no valid reading
+  if (redPW == 0 || greenPW == 0 || bluePW == 0)
+    return false;
 
   bool strongEnough = redPW < RED_THRESHOLD;
-  bool dominant = (redPW < greenPW - RED_MARGIN) && (redPW < bluePW - RED_MARGIN);
+
+  bool dominant =
+    (redPW + RED_MARGIN < greenPW) &&
+    (redPW + RED_MARGIN < bluePW);
 
   return strongEnough && dominant;
 }
 
-// ---- High-level movement ----
-void stopAll() {
+
+bool isObjectDetected() {
+
+  return digitalRead(IR_SENSOR) == LOW;
+}
+
+
+bool obstacleDetected() {
+
+  return isRedDetected() || isObjectDetected();
+}
+
+
+void stopForObstacle() {
+
   leftSide(0);
   rightSide(0);
+}
+
+
+void stopAll() {
+
+  leftSide(0);
+  rightSide(0);
+
   activeMove = nullptr;
 }
 
+
 void moveForward() {
+
   activeMove = moveForward;
-  if (isRedDetected()) { stopAll(); return; }
-  leftSide(1);  rightSide(1);
-}
-void rotateLeft() {
-  activeMove = rotateLeft;
-  if (isRedDetected()) { stopAll(); return; }
-  leftSide(-1); rightSide(-1);
-}
-void moveBackward() {
-  activeMove = moveBackward;
-  if (isRedDetected()) { stopAll(); return; }
-  leftSide(-1); rightSide(1);
-}
-void rotateRight() {
-  activeMove = rotateRight;
-  if (isRedDetected()) { stopAll(); return; }
-  leftSide(1);  rightSide(-1);
+
+  if (obstacleDetected()) {
+    stopForObstacle();
+    return;
+  }
+
+  leftSide(1);
+  rightSide(-1);
 }
 
-// ---- Delay that watches for red and auto-resumes movement ----
+
+void moveBackward() {
+
+  activeMove = moveBackward;
+
+  if (obstacleDetected()) {
+    stopForObstacle();
+    return;
+  }
+
+  leftSide(-1);
+  rightSide(1);
+}
+
+
+void rotateLeft() {
+
+  activeMove = rotateLeft;
+
+  if (obstacleDetected()) {
+    stopForObstacle();
+    return;
+  }
+
+  leftSide(-1);
+  rightSide(-1);
+}
+
+
+void rotateRight() {
+
+  activeMove = rotateRight;
+
+  if (obstacleDetected()) {
+    stopForObstacle();
+    return;
+  }
+
+  leftSide(1);
+  rightSide(1);
+}
+
+
 void safeDelay(unsigned long ms) {
+
   unsigned long start = millis();
-  bool wasStoppedForRed = false;
+  bool stopped = false;
 
   while (millis() - start < ms) {
-    if (isRedDetected()) {
-      leftSide(0); rightSide(0); // stop motors, but keep activeMove remembered
-      wasStoppedForRed = true;
-    } else if (wasStoppedForRed && activeMove != nullptr) {
-      activeMove(); // resume last commanded movement
-      wasStoppedForRed = false;
+
+    if (obstacleDetected()) {
+
+      stopForObstacle();
+      stopped = true;
+
     }
-    delay(20); // small polling interval
+    else if (stopped && activeMove != nullptr) {
+
+      activeMove();
+      stopped = false;
+    }
+
+    delay(50);
   }
 }
 
-// ---- Example movement loop (replace/extend freely) ----
+
 void loop() {
+
   moveForward();
-  safeDelay(1000);
+  safeDelay(100);
+
   stopAll();
-  safeDelay(500);
+  safeDelay(1000);
+
+  rotateLeft();
+  safeDelay(100);
+
+  stopAll();
+  safeDelay(1000);
+  
+  rotateRight();
+  safeDelay(100);
+
+  stopAll();
+  safeDelay(1000);
 
   moveBackward();
-  safeDelay(1000);
+  safeDelay(100);
+
   stopAll();
-  safeDelay(500);
+  safeDelay(1000);
 }
