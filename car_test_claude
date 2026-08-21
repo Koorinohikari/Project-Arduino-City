@@ -16,22 +16,37 @@ const int S1 = 23;
 const int S2 = 24;
 const int S3 = 25;
 const int TCS_OUT = 26;
+// E0 conectado directo a GND por hardware — no requiere control por software
 
-const int RED_THRESHOLD = 50;
-const int RED_MARGIN = 1;
+const int RED_THRESHOLD = 35;
+const int RED_MARGIN = 5;
+
+// Tiempo de espera tras detectar rojo antes de permitir movimiento nuevamente
+// (evita jittering por detecciones en bursts / intermitentes)
+const float RED_STOP_SECONDS = 3.0;
+const unsigned long RED_STOP_MS = (unsigned long)(RED_STOP_SECONDS * 1000);
+unsigned long redStopUntil = 0;  // marca de tiempo (millis) hasta la cual el movimiento queda bloqueado
 
 
 // ===== SENSOR IR DE PROXIMIDAD =====
 const int IR_SENSOR = 27;
 
 
-// ===== MOVIMIENTO ACTUAL =====
-typedef void (*MoveFunc)();
-MoveFunc activeMove = nullptr;
+// ===== SENSORES DE SEGUIMIENTO DE LÍNEA (L y R) =====
+const int LINE_SENSOR_L = 28;
+const int LINE_SENSOR_R = 29;  // ajusta este pin al que corresponda en tu cableado
 
+// Detecta línea blanca cuando la salida del sensor es LOW
+const int WHITE_DETECTED = LOW;
+
+
+// ======================================================
+// SETUP
+// ======================================================
 
 void setup() {
 
+  // Motores
   pinMode(ENA, OUTPUT);
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
@@ -40,34 +55,52 @@ void setup() {
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
 
+  // TCS3200
   pinMode(S0, OUTPUT);
   pinMode(S1, OUTPUT);
   pinMode(S2, OUTPUT);
   pinMode(S3, OUTPUT);
   pinMode(TCS_OUT, INPUT);
 
+  // Sensor IR
   pinMode(IR_SENSOR, INPUT);
 
+  // Sensores de línea
+  pinMode(LINE_SENSOR_L, INPUT);
+  pinMode(LINE_SENSOR_R, INPUT);
+
+  // Configuración TCS3200
   digitalWrite(S0, HIGH);
   digitalWrite(S1, LOW);
 
   Serial.begin(9600);
+
+  Serial.println("Sistema iniciado.");
 }
 
+
+// ======================================================
+// CONTROL DE MOTORES
+// ======================================================
 
 void leftSide(int dir) {
 
   if (dir == 1) {
+
     digitalWrite(IN1, HIGH);
     digitalWrite(IN2, LOW);
     analogWrite(ENA, SPEED);
   }
+
   else if (dir == -1) {
+
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, HIGH);
     analogWrite(ENA, SPEED);
   }
+
   else {
+
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, LOW);
     analogWrite(ENA, 0);
@@ -78,16 +111,21 @@ void leftSide(int dir) {
 void rightSide(int dir) {
 
   if (dir == 1) {
+
     digitalWrite(IN3, HIGH);
     digitalWrite(IN4, LOW);
     analogWrite(ENB, SPEED);
   }
+
   else if (dir == -1) {
+
     digitalWrite(IN3, LOW);
     digitalWrite(IN4, HIGH);
     analogWrite(ENB, SPEED);
   }
+
   else {
+
     digitalWrite(IN3, LOW);
     digitalWrite(IN4, LOW);
     analogWrite(ENB, 0);
@@ -95,12 +133,16 @@ void rightSide(int dir) {
 }
 
 
+// ======================================================
+// SENSOR DE COLOR
+// ======================================================
+
 long readColorPulse(bool s2, bool s3) {
 
   digitalWrite(S2, s2);
   digitalWrite(S3, s3);
 
-  delayMicroseconds(50);
+  delay(10);
 
   return pulseIn(TCS_OUT, LOW, 25000);
 }
@@ -125,137 +167,147 @@ bool isRedDetected() {
 }
 
 
+// ======================================================
+// SENSOR IR DE PROXIMIDAD
+// ======================================================
+
 bool isObjectDetected() {
 
   return digitalRead(IR_SENSOR) == LOW;
 }
 
 
-bool obstacleDetected() {
+// ======================================================
+// SENSORES DE SEGUIMIENTO DE LÍNEA
+// ======================================================
 
-  return isRedDetected() || isObjectDetected();
+bool isWhiteLineDetected(int sensorPin) {
+
+  return digitalRead(sensorPin) == WHITE_DETECTED;
 }
 
 
-void stopForObstacle() {
-
-  leftSide(0);
-  rightSide(0);
-}
-
-
-void stopAll() {
-
-  leftSide(0);
-  rightSide(0);
-
-  activeMove = nullptr;
-}
-
+// ======================================================
+// MOVIMIENTO
+// ======================================================
 
 void moveForward() {
 
-  activeMove = moveForward;
-
-  if (obstacleDetected()) {
-    stopForObstacle();
-    return;
-  }
-
   leftSide(1);
   rightSide(-1);
 }
 
+
+void turnLeft() {
+
+  // Pivote: rueda izquierda detenida, derecha avanza -> gira hacia la izquierda
+  leftSide(0);
+  rightSide(-1);
+}
+
+
+void turnRight() {
+
+  // Pivote: rueda derecha detenida, izquierda avanza -> gira hacia la derecha
+  leftSide(1);
+  rightSide(0);
+}
+
+
+void stopVehicle() {
+
+  leftSide(0);
+  rightSide(0);
+}
 
 void moveBackward() {
 
-  activeMove = moveBackward;
-
-  if (obstacleDetected()) {
-    stopForObstacle();
-    return;
-  }
-
   leftSide(-1);
   rightSide(1);
 }
 
 
-void rotateLeft() {
+// ======================================================
+// SEGUIMIENTO DE LÍNEA Y SENSORES
+// ======================================================
 
-  activeMove = rotateLeft;
+void followLine() {
 
-  if (obstacleDetected()) {
-    stopForObstacle();
+  // ==================================================
+  // BLOQUEO POR DETECCIÓN PREVIA DE ROJO
+  // ==================================================
+
+  if (millis() < redStopUntil) {
+
+    stopVehicle();
     return;
   }
 
-  leftSide(-1);
-  rightSide(-1);
-}
 
+  // ==================================================
+  // SENSOR DE COLOR
+  // ==================================================
 
-void rotateRight() {
+  if (isRedDetected()) {
 
-  activeMove = rotateRight;
+    Serial.println("ROJO DETECTADO");
 
-  if (obstacleDetected()) {
-    stopForObstacle();
+    stopVehicle();
+    redStopUntil = millis() + RED_STOP_MS;
     return;
   }
 
-  leftSide(1);
-  rightSide(1);
-}
+
+  // ==================================================
+  // SENSOR IR DE PROXIMIDAD
+  // ==================================================
+
+  if (isObjectDetected()) {
+
+    Serial.println("OBSTACULO DETECTADO");
+
+    stopVehicle();
+    return;
+  }
 
 
-void safeDelay(unsigned long ms) {
+  // ==================================================
+  // SEGUIMIENTO DE LÍNEA (L y R)
+  // ==================================================
 
-  unsigned long start = millis();
-  bool stopped = false;
+  bool leftOnLine = isWhiteLineDetected(LINE_SENSOR_L);
+  bool rightOnLine = isWhiteLineDetected(LINE_SENSOR_R);
 
-  while (millis() - start < ms) {
+  if (leftOnLine && rightOnLine) {
 
-    if (obstacleDetected()) {
+    moveForward();
+  }
 
-      stopForObstacle();
-      stopped = true;
+  else if (leftOnLine && !rightOnLine) {
 
-    }
-    else if (stopped && activeMove != nullptr) {
+    turnLeft();
+  }
 
-      activeMove();
-      stopped = false;
-    }
+  else if (!leftOnLine && rightOnLine) {
 
-    delay(50);
+    turnRight();
+  }
+
+  else {
+
+    // Ningún sensor detecta la línea
+    moveBackward();
   }
 }
 
+
+// ======================================================
+// LOOP PRINCIPAL
+// ======================================================
 
 void loop() {
 
-  moveForward();
-  safeDelay(100);
+  followLine();
 
-  stopAll();
-  safeDelay(1000);
-
-  rotateLeft();
-  safeDelay(100);
-
-  stopAll();
-  safeDelay(1000);
-  
-  rotateRight();
-  safeDelay(100);
-
-  stopAll();
-  safeDelay(1000);
-
-  moveBackward();
-  safeDelay(100);
-
-  stopAll();
-  safeDelay(1000);
+  delay(100);
 }
