@@ -1,0 +1,431 @@
+// ============================================================================
+//  MINIATURE CITY SIMULATION — Unified Sketch
+//  Target: Arduino Mega 2560
+//
+//  Subsystems (all non-blocking, driven from one shared loop() via millis()):
+//    - 2x Vehicular + Pedestrian traffic light pairs (Intersection 1 & 2,
+//      work inversely — only one is ever GREEN/YELLOW at a time)
+//    - City lights (LDR-controlled, hysteresis band, survives a missing LDR)
+//    - Train barrier (servo + SPI OLED countdown, survives a missing OLED)
+//
+//  Pin allocation rule (per project spec):
+//    - Pins 2-13  : RESERVED ONLY for PWM-driven elements (traffic yellows,
+//                   city lights, buzzers)
+//    - Pins 0, 1  : left unused (reserved for Serial/USART0 — required for
+//                   debug output and the OLED/LDR fallback warnings)
+//    - Pins 14-53 : everything else (solid-state LEDs, servo, OLED control)
+//
+//  NOTE: Not compiled/verified in this environment (no Arduino toolchain
+//  access here) — please compile in the Arduino IDE. Report any errors and
+//  I'll fix them immediately.
+// ============================================================================
+
+#include <SPI.h>
+#include <Servo.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <stdlib.h>
+
+// ============================================================================
+//  PIN MAP
+// ============================================================================
+
+// --- Intersection 1 -----------------------------------------------------
+#define I1_GREEN_PIN      22
+#define I1_RED_PIN        23
+#define I1_YELLOW_PIN      5   // PWM (fade)
+#define I1_PED_GREEN_PIN  26
+#define I1_PED_RED_PIN    27
+#define I1_BUZZER_PIN     10   // PWM-range, per pin rule
+
+// --- Intersection 2 (inverse of Intersection 1) -------------------------
+#define I2_GREEN_PIN      24
+#define I2_RED_PIN        25
+#define I2_YELLOW_PIN      8   // PWM (fade)
+#define I2_PED_GREEN_PIN  28
+#define I2_PED_RED_PIN    29
+#define I2_BUZZER_PIN     11   // PWM-range, per pin rule
+
+// --- City lights ----------------------------------------------------------
+#define CITY_LIGHT_PIN     6   // PWM (fade)
+#define LDR_PIN            A0  // analog input, separate address space
+
+// --- Train barrier ----------------------------------------------------------
+#define SERVO_PIN         34   // moved from original pin 9 — Servo library
+                                // drives pins directly (no analogWrite), so it
+                                // doesn't need a PWM pin; freed pin 9 for the
+                                // 2-13 PWM range per the new pin rule
+#define OLED_CS            30
+#define OLED_DC            31
+#define OLED_RES           32
+// Hardware SPI (fixed on Mega, not reassignable): MOSI=51, SCK=52
+
+// ============================================================================
+//  OLED / WARNING BITMAP  (from train-barrier code, unchanged)
+// ============================================================================
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+const unsigned char PROGMEM imgBitmap[] = {
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xe0, 0xf8, 0xfc, 0xfe, 0xff, 0xff, 0x7f, 0x7f, 0xff, 0xff, 0xfe, 0xfc, 0xf8, 0xe0, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xc0, 0xf0, 0xfc, 0xfe, 0xff, 0xff, 0x7f, 0x1f, 0x0f, 0x03, 0x00, 0x00, 0x00, 0x00, 0x03, 0x0f, 0x1f, 0x7f, 0xff, 0xff, 0xfe, 0xfc, 0xf0, 0xc0, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xf0, 0xf8, 0xfe, 0xff, 0xff, 0x7f, 0x3f, 0x0f, 0x03, 0x01, 0x00, 0x00, 0xf0, 0xf8, 0xfc, 0xfc, 0xfc, 0xfc, 0xf8, 0xf0, 0x00, 0x00, 0x01, 0x03, 0x0f, 0x3f, 0x7f, 0xff, 0xff, 0xfe, 0xf8, 0xf0, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xe0, 0xf8, 0xfc, 0xff, 0xff, 0xff, 0x7f, 0x1f, 0x07, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x07, 0x1f, 0x7f, 0xff, 0xff, 0xff, 0xfc, 0xf8, 0xe0, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xf0, 0xfc, 0xfe, 0xff, 0xff, 0x7f, 0x1f, 0x0f, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f, 0xff, 0xff, 0xff, 0xff, 0x1f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x0f, 0x1f, 0x7f, 0xff, 0xff, 0xfe, 0xfc, 0xf0, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xe0, 0xf8, 0xfe, 0xff, 0xff, 0xff, 0x3f, 0x0f, 0x03, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xc0, 0xc7, 0xe7, 0xe7, 0xc7, 0xc0, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x0f, 0x3f, 0xff, 0xff, 0xff, 0xfe, 0xf8, 0xe0, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xf8, 0xfc, 0xff, 0xff, 0xff, 0x7f, 0x1f, 0x07, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x0f, 0x1f, 0x1f, 0x1f, 0x1f, 0x0f, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x07, 0x1f, 0x7f, 0xff, 0xff, 0xff, 0xfc, 0xf8, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x1f, 0x3f, 0x7f, 0x7f, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7f, 0x7f, 0x3f, 0x1f, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &SPI, OLED_DC, OLED_RES, OLED_CS);
+Servo barrierServo;
+
+bool oledAvailable = false; // set false at boot if display.begin() fails —
+                             // rest of the city keeps running regardless
+
+// ============================================================================
+//  TUNABLE CONFIGURATION (change freely — nothing else depends on these
+//  values structurally)
+// ============================================================================
+
+// --- Intersections ---
+const unsigned long GREEN_DURATION_MS  = 5000UL;
+const unsigned long YELLOW_DURATION_MS = 3000UL;
+const unsigned long PED_BLINK_INTERVAL_MS = YELLOW_DURATION_MS / 6; // 3 blink cycles across the yellow phase, same ratio as the original design
+const unsigned int  BUZZER_FREQ_HZ     = 2000;
+const unsigned long BUZZER_BEEP_MS     = 150UL; // must stay < PED_BLINK_INTERVAL_MS
+
+// --- City lights ---
+const int LDR_ON_THRESHOLD   = 450;  // ambient reading below this -> lights ON
+const int LDR_OFF_THRESHOLD  = 550;  // ambient reading above this -> lights OFF
+                                      // (gap between the two = hysteresis band,
+                                      //  prevents flicker from a noisy/missing LDR)
+const unsigned long LDR_POLL_INTERVAL_MS = 200UL;
+const unsigned long CITY_FADE_DURATION_MS = 1000UL;
+
+// --- Train barrier ---
+const int BARRIER_OPEN_ANGLE   = 90;
+const int BARRIER_CLOSED_ANGLE = 0;
+const unsigned long SERVO_STEP_DELAY_MS = 15UL; // ms per degree of sweep
+const unsigned long COUNTDOWN_TICK_MS   = 1000UL;
+const unsigned long WARNING_HOLD_MS     = 2500UL;
+
+// ============================================================================
+//  GENERIC NON-BLOCKING FADER  (replaces the old blocking visFade())
+// ============================================================================
+
+struct Fader {
+  uint8_t pin;
+  unsigned long stepIntervalMs;
+  unsigned long lastStepTime;
+  int value;
+  int target;
+  bool active;
+};
+
+void faderStart(Fader &f, uint8_t pin, int fromValue, int toValue, unsigned long durationMs) {
+  f.pin = pin;
+  f.value = fromValue;
+  f.target = toValue;
+  int steps = abs(toValue - fromValue);
+  f.stepIntervalMs = (steps > 0) ? (durationMs / (unsigned long)steps) : durationMs;
+  if (f.stepIntervalMs == 0) f.stepIntervalMs = 1;
+  f.lastStepTime = millis();
+  f.active = true;
+  analogWrite(pin, fromValue);
+}
+
+// Call every loop() pass. Returns true the instant the fade reaches target.
+bool faderUpdate(Fader &f) {
+  if (!f.active) return false;
+  unsigned long now = millis();
+  if (now - f.lastStepTime < f.stepIntervalMs) return false;
+  f.lastStepTime = now;
+  if (f.value < f.target) f.value++;
+  else if (f.value > f.target) f.value--;
+  analogWrite(f.pin, f.value);
+  if (f.value == f.target) {
+    f.active = false;
+    return true;
+  }
+  return false;
+}
+
+// ============================================================================
+//  INTERSECTIONS (2x vehicular + pedestrian, inverse master FSM)
+// ============================================================================
+
+struct Intersection {
+  uint8_t greenPin, redPin, yellowPin;
+  uint8_t pedGreenPin, pedRedPin, buzzerPin;
+};
+
+Intersection I1 = { I1_GREEN_PIN, I1_RED_PIN, I1_YELLOW_PIN, I1_PED_GREEN_PIN, I1_PED_RED_PIN, I1_BUZZER_PIN };
+Intersection I2 = { I2_GREEN_PIN, I2_RED_PIN, I2_YELLOW_PIN, I2_PED_GREEN_PIN, I2_PED_RED_PIN, I2_BUZZER_PIN };
+
+enum VehState { V_GREEN, V_RED };
+
+void setVehicleState(const Intersection &x, VehState s) {
+  if (s == V_GREEN) {
+    digitalWrite(x.greenPin, HIGH);
+    digitalWrite(x.redPin, LOW);
+    analogWrite(x.yellowPin, 0);
+    digitalWrite(x.pedGreenPin, HIGH);
+    digitalWrite(x.pedRedPin, LOW);
+    noTone(x.buzzerPin);
+  } else { // V_RED
+    digitalWrite(x.greenPin, LOW);
+    digitalWrite(x.redPin, HIGH);
+    analogWrite(x.yellowPin, 0);
+    digitalWrite(x.pedGreenPin, LOW);
+    digitalWrite(x.pedRedPin, HIGH);
+    noTone(x.buzzerPin);
+  }
+}
+
+enum MasterPhase { PHASE_ACTIVE_GREEN, PHASE_ACTIVE_YELLOW };
+
+Intersection* activeInt = &I1; // currently cycling through GREEN->YELLOW
+Intersection* idleInt   = &I2; // held at RED for the whole active cycle
+MasterPhase   masterPhase = PHASE_ACTIVE_GREEN;
+unsigned long phaseStart = 0;
+Fader         yellowFader;     // shared — safe because only one intersection
+                                // is ever in YELLOW at a time (mutual exclusion
+                                // by design, since idleInt is always RED)
+bool          pedBlinkOn = false;
+unsigned long pedBlinkLast = 0;
+
+void enterGreen() {
+  masterPhase = PHASE_ACTIVE_GREEN;
+  phaseStart = millis();
+  setVehicleState(*activeInt, V_GREEN);
+  setVehicleState(*idleInt, V_RED);
+}
+
+void enterYellow() {
+  masterPhase = PHASE_ACTIVE_YELLOW;
+  phaseStart = millis();
+  digitalWrite(activeInt->greenPin, LOW);
+  faderStart(yellowFader, activeInt->yellowPin, 0, 255, PED_BLINK_INTERVAL_MS);
+  pedBlinkOn = false;
+  pedBlinkLast = millis();
+  digitalWrite(activeInt->pedGreenPin, LOW);
+}
+
+void swapActiveIntersection() {
+  Intersection* tmp = activeInt;
+  activeInt = idleInt;
+  idleInt = tmp;
+}
+
+void updateIntersections() {
+  unsigned long now = millis();
+  unsigned long elapsed = now - phaseStart;
+
+  if (masterPhase == PHASE_ACTIVE_GREEN) {
+    if (elapsed >= GREEN_DURATION_MS) enterYellow();
+    return;
+  }
+
+  // PHASE_ACTIVE_YELLOW: fade bounces 0<->255 as a visual "blink" effect,
+  // same 6-segment ratio the original design used
+  if (faderUpdate(yellowFader)) {
+    int newTarget = (yellowFader.target == 255) ? 0 : 255;
+    faderStart(yellowFader, activeInt->yellowPin, yellowFader.value, newTarget, PED_BLINK_INTERVAL_MS);
+  }
+
+  // Pedestrian green blink + buzzer, synced to the same interval
+  if (now - pedBlinkLast >= PED_BLINK_INTERVAL_MS) {
+    pedBlinkLast = now;
+    pedBlinkOn = !pedBlinkOn;
+    digitalWrite(activeInt->pedGreenPin, pedBlinkOn ? HIGH : LOW);
+    if (pedBlinkOn) tone(activeInt->buzzerPin, BUZZER_FREQ_HZ, BUZZER_BEEP_MS);
+  }
+
+  if (elapsed >= YELLOW_DURATION_MS) {
+    analogWrite(activeInt->yellowPin, 0);
+    digitalWrite(activeInt->pedGreenPin, LOW);
+    noTone(activeInt->buzzerPin);
+    swapActiveIntersection();
+    enterGreen();
+  }
+}
+
+// ============================================================================
+//  CITY LIGHTS  (LDR + hysteresis, survives a missing/disconnected LDR)
+// ============================================================================
+
+bool cityLightsOn = false;
+unsigned long lastLdrPoll = 0;
+int ldrSmoothed = 512; // neutral starting point
+Fader cityFader;
+
+void updateCityLights() {
+  unsigned long now = millis();
+  if (now - lastLdrPoll < LDR_POLL_INTERVAL_MS) {
+    faderUpdate(cityFader);
+    return;
+  }
+  lastLdrPoll = now;
+
+  int raw = analogRead(LDR_PIN); // if the LDR is missing, this just returns a
+                                  // noisy/floating value — never blocks, never crashes
+  ldrSmoothed = (ldrSmoothed * 3 + raw) / 4; // simple smoothing to reduce noise-driven flicker
+
+  if (!cityLightsOn && ldrSmoothed < LDR_ON_THRESHOLD) {
+    cityLightsOn = true;
+    faderStart(cityFader, CITY_LIGHT_PIN, cityFader.active ? cityFader.value : 0, 255, CITY_FADE_DURATION_MS);
+  } else if (cityLightsOn && ldrSmoothed > LDR_OFF_THRESHOLD) {
+    cityLightsOn = false;
+    faderStart(cityFader, CITY_LIGHT_PIN, cityFader.active ? cityFader.value : 255, 0, CITY_FADE_DURATION_MS);
+  }
+
+  faderUpdate(cityFader);
+}
+
+// ============================================================================
+//  TRAIN BARRIER  (servo + OLED, non-blocking sweep + countdown FSM)
+// ============================================================================
+
+enum BarrierState { BAR_OPENING, BAR_COUNTDOWN, BAR_CLOSING, BAR_WARNING_HOLD };
+
+BarrierState barrierState = BAR_OPENING;
+unsigned long barrierStateStart = 0;
+int servoCurrentAngle = BARRIER_OPEN_ANGLE;
+int servoTargetAngle  = BARRIER_OPEN_ANGLE;
+unsigned long lastServoStep = 0;
+int countdownValue = 10;
+unsigned long lastCountdownTick = 0;
+
+// Prints text on the OLED. No-ops safely if the display isn't available.
+void printOLED(const char* text, int size = 1, uint16_t color = SSD1306_WHITE, int cursorX = 0, int cursorY = 0) {
+  if (!oledAvailable) return;
+  display.clearDisplay();
+  display.setTextSize(size);
+  display.setTextColor(color);
+  display.setCursor(cursorX, cursorY);
+  display.print(text);
+  display.display();
+}
+
+// Draws the stored warning bitmap. No-ops safely if the display isn't available.
+void printImageOLED(int x = 0, int y = 0) {
+  if (!oledAvailable) return;
+  display.clearDisplay();
+  display.drawBitmap(x, y, imgBitmap, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_WHITE);
+  display.display();
+}
+
+void showCountdown(int val) {
+  char buf[4];
+  itoa(val, buf, 10); // avoids per-second String allocation
+  if (val >= 10) printOLED(buf, 9, SSD1306_WHITE, 10);
+  else           printOLED(buf, 9, SSD1306_WHITE, 40);
+}
+
+void servoStartMove(int target) {
+  servoTargetAngle = target;
+  lastServoStep = millis();
+}
+
+// Advances the servo by at most one degree, paced by SERVO_STEP_DELAY_MS.
+// Returns true once the target angle is reached.
+bool servoStep() {
+  if (servoCurrentAngle == servoTargetAngle) return true;
+  unsigned long now = millis();
+  if (now - lastServoStep < SERVO_STEP_DELAY_MS) return false;
+  lastServoStep = now;
+  servoCurrentAngle += (servoTargetAngle > servoCurrentAngle) ? 1 : -1;
+  barrierServo.write(servoCurrentAngle);
+  return (servoCurrentAngle == servoTargetAngle);
+}
+
+void updateBarrier() {
+  unsigned long now = millis();
+
+  switch (barrierState) {
+    case BAR_OPENING:
+      if (servoStep()) {
+        barrierState = BAR_COUNTDOWN;
+        countdownValue = 10;
+        lastCountdownTick = now;
+        showCountdown(countdownValue);
+      }
+      break;
+
+    case BAR_COUNTDOWN:
+      if (now - lastCountdownTick >= COUNTDOWN_TICK_MS) {
+        lastCountdownTick = now;
+        countdownValue--;
+        if (countdownValue < 0) {
+          barrierState = BAR_CLOSING;
+          servoStartMove(BARRIER_CLOSED_ANGLE);
+        } else {
+          showCountdown(countdownValue);
+        }
+      }
+      break;
+
+    case BAR_CLOSING:
+      if (servoStep()) {
+        printImageOLED();
+        barrierState = BAR_WARNING_HOLD;
+        barrierStateStart = now;
+      }
+      break;
+
+    case BAR_WARNING_HOLD:
+      if (now - barrierStateStart >= WARNING_HOLD_MS) {
+        barrierState = BAR_OPENING;
+        servoStartMove(BARRIER_OPEN_ANGLE);
+      }
+      break;
+  }
+}
+
+// ============================================================================
+//  SETUP
+// ============================================================================
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(I1_GREEN_PIN, OUTPUT);
+  pinMode(I1_RED_PIN, OUTPUT);
+  pinMode(I1_YELLOW_PIN, OUTPUT);
+  pinMode(I1_PED_GREEN_PIN, OUTPUT);
+  pinMode(I1_PED_RED_PIN, OUTPUT);
+  pinMode(I1_BUZZER_PIN, OUTPUT);
+
+  pinMode(I2_GREEN_PIN, OUTPUT);
+  pinMode(I2_RED_PIN, OUTPUT);
+  pinMode(I2_YELLOW_PIN, OUTPUT);
+  pinMode(I2_PED_GREEN_PIN, OUTPUT);
+  pinMode(I2_PED_RED_PIN, OUTPUT);
+  pinMode(I2_BUZZER_PIN, OUTPUT);
+
+  pinMode(CITY_LIGHT_PIN, OUTPUT);
+  // LDR_PIN is analog input — no pinMode() needed
+
+  oledAvailable = display.begin(SSD1306_SWITCHCAPVCC);
+  if (!oledAvailable) {
+    Serial.println(F("[WARN] OLED not detected - continuing without display."));
+  } else {
+    display.clearDisplay();
+    display.display();
+  }
+
+  barrierServo.attach(SERVO_PIN);
+  barrierServo.write(BARRIER_OPEN_ANGLE);
+  servoCurrentAngle = BARRIER_OPEN_ANGLE;
+  servoTargetAngle  = BARRIER_OPEN_ANGLE;
+
+  enterGreen(); // initializes both intersections to a deterministic state
+
+  barrierState = BAR_OPENING; // servo already at target -> falls straight
+  barrierStateStart = millis(); // into the countdown on the first update
+}
+
+// ============================================================================
+//  MAIN LOOP  —  everything below is non-blocking; no delay() anywhere
+// ============================================================================
+
+void loop() {
+  updateIntersections();
+  updateCityLights();
+  updateBarrier();
+}
